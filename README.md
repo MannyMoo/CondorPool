@@ -43,6 +43,13 @@ with Pool() as pool:
 	results = mapjob.get()
 ```
 
-For more info, see `help(Pool)`.
+For more info, see 
+
+``` python
+from condorpool import Job, Pool
+
+help(Pool)
+help(Job)
+```
 
 As with `multiprocessing.Pool`, the function to call, its arguments, and its return value must all be [picklable](https://docs.python.org/3/library/pickle.html) in order to send them to and from the batch system.

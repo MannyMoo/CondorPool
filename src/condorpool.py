@@ -89,16 +89,18 @@ class Job(object):
                  submitdir = '.', cleanup = True, cleanupfiles = [],
                  polltime = 5):
         '''Makes a condor job. target, args, kwargs and the return value of
-        target must all be picklable.
-        target: the python function to be called.
-        submitdir: directory from which to submit the job and copy the
+        target must all be picklable. By default, the current environment is
+        sent with the job (getenv = True) unless 'environment' is given in
+        submitkwargs.
+        - target: the python function to be called.
+        - args & kwargs: the arguments to be passed to target
+        - submitdir: directory from which to submit the job and copy the
           output files (stdout, stderr, log, and return value)
-        args & kwargs: the arguments to be passed to target
-        submitkwargs: the dict to be passed the htcondor.Submit instance, see
+        - submitkwargs: the dict to be passed the htcondor.Submit instance, see
         https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
-        cleanup: delete temporary files created by the job when it's
-        deleted. Default stdout, stderr and log.
-        cleanupfiles: extra files to delete when the job is deleted.
+        - cleanup: delete temporary files created by the job when it's
+          deleted. Default to the input script, stdout, stderr and log.
+        - cleanupfiles: extra files to delete when the job is deleted.
         '''
         self.target = target
         self.submitdir = submitdir
@@ -210,7 +212,7 @@ except pickle.PicklingError as ex:
     raise ex
 
 # Write the pickled return value it to the output file.
-with open({fout!r}, 'w') as fout:
+with open({fout!r}, 'wb') as fout:
     fout.write(retpkl)
     '''.format(pklargs = pklargs, fout = self.fout))
             os.chmod(self.fin, 0o700)
@@ -305,7 +307,7 @@ with open({fout!r}, 'w') as fout:
     def _return_value(self):
         '''Get the return value of the job.'''
         with TmpCd(self.submitdir):
-            with open(self.fout) as fout:
+            with open(self.fout, 'rb') as fout:
                 retval = pickle.load(fout)
         return retval
 
@@ -450,14 +452,17 @@ class Pool(object):
     '''Interface to condor that mimics multiprocessing.Pool.'''
 
     def __init__(self, submitkwargs = {}, jobkwargs = {}):
-        '''submitkwargs: a default set of kwargs for htcondor.Submit instances.
-        jobkwargs: a default set of kwargs for Job instances (excluding 
-          submitkwargs).'''
+        '''- submitkwargs: a default set of kwargs for htcondor.Submit instances.
+          See:
+          https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
+        - jobkwargs: a default set of kwargs for Job instances (excluding 
+          submitkwargs). See help(Job).'''
         self.submitkwargs = dict(submitkwargs)
         self.jobkwargs = dict(jobkwargs)
         self.jobs = []
 
     def __del__(self):
+        '''Close the Pool.'''
         # May already be closed if 'with' was used, but in case
         # not, close on delete. There's no harm in closing twice.
         self.close()
@@ -466,6 +471,7 @@ class Pool(object):
         return self
 
     def __exit__(self, *args):
+        '''Close the Pool.'''
         self.close()
         
     def clear_completed(self):
@@ -483,7 +489,10 @@ class Pool(object):
                 j.remove()
 
     def close(self):
-        '''Close this pool and accept no more jobs.'''
+        '''Close this pool: wait for all current jobs to complete (unless they
+        were submitted with cleanup = False) and accept no more jobs. Jobs
+        that are currently Held or Suspended will be killed (again, unless
+        submitted with cleanup = False).'''
         self.jobs = []
         self.apply_async = self._closed_apply_async
 
