@@ -53,3 +53,5 @@ help(Job)
 ```
 
 As with `multiprocessing.Pool`, the function to call, its arguments, and its return value must all be [picklable](https://docs.python.org/3/library/pickle.html) in order to send them to and from the batch system.
+
+Tested with python 3.8.10 & `htcondor` 9.0.0, python 2.7.16 & `htcondor` 9.0.0, and Condor 9.0.1.
