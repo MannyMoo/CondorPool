@@ -25,22 +25,22 @@ from condorpool import Pool
 from math import sqrt
 
 with Pool() as pool:
-	# Call a function and wait to get its result
+    # Call a function and wait to get its result
     result = pool.apply(sqrt, args = (2,))
-	
-	# Call a function asynchronously and retrieve its result at
-	# a later time
-	job = pool.apply_async(sqrt, args = (2,))
-	# Get the result, waiting for the job to complete if necessary
-	result = job.get()
-	
-	# Map a sequence of arguments with a function
-	results = pool.map(sqrt, range(5))
-	
-	# Do the same asynchronously
-	mapjob = pool.map_async(sqrt, range(5))
-	# Get the results, waiting for all jobs
-	results = mapjob.get()
+    
+    # Call a function asynchronously and retrieve its result at
+    # a later time
+    job = pool.apply_async(sqrt, args = (2,))
+    # Get the result, waiting for the job to complete if necessary
+    result = job.get()
+    
+    # Map a sequence of arguments with a function
+    results = pool.map(sqrt, range(5))
+    
+    # Do the same asynchronously
+    mapjob = pool.map_async(sqrt, range(5))
+    # Get the results, waiting for all jobs
+    results = mapjob.get()
 ```
 
 For more info, see 
