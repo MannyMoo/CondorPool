@@ -18,7 +18,9 @@ and add `CondorPool/src` to `PYTHONPATH` by whichever method works for you, eg f
 export PYTHONPATH=/<path>/<to>/CondorPool/src:$PYTHONPATH
 ```
 
-The interface is identical to that of `multiprocessing.Pool`. Running on a machine that has access to an HTCondor batch system, you can do, eg:
+The interface is identical to that of `multiprocessing.Pool`. As with `multiprocessing.Pool`, the function to call, its arguments, and its return value must all be [picklable](https://docs.python.org/3/library/pickle.html) in order to send them to and from the batch system.
+
+Running on a machine that has access to an HTCondor batch system, you can do, eg:
 
 ``` python
 from condorpool import Pool
@@ -43,13 +45,15 @@ with Pool() as pool:
     results = mapjob.get()
 ```
 
-When the `Pool` exits from a `with` statement, goes out of scope, or has `close()` called manually, it will wait til all active `Job`s are completed. This ensures that the `Job`s complete successfully (an exception will be raised if not) and they clean up files created in the submission directory (main script, stdout, stderr, log, and return value `.pkl`). If you don't want the `Pool` to wait (and don't care about the return value), you can create a `Pool` with:
+When the `Pool` exits from a `with` statement, goes out of scope, or has `close()` called manually, it will wait til all active `Job`s are completed. This ensures that the `Job`s complete successfully (an exception will be raised if not) and they clean up files created in the submission directory (main script, stdout, stderr, log, and return value `.pkl`). By default, if a `Job` is Held or Suspended when the `Pool` closed, it's killed. You can manage which status types are killed on close with the constructor argument `killstats`.
+
+If you don't want the `Pool` to wait (and don't care about the return value), you can create a `Pool` with:
 
 ``` python
 Pool(jobkwargs = {'cleanup' : False, 'submitdir' : '/tmp'})
 ```
 
-This way, the temporary files created by the `Job`s will be written to `/tmp` and the `Job`s will go out of scope without waiting to complete or cleaning up after themselves.
+This way, the temporary files created by the `Job`s will be written to `/tmp` (which you may want to do in any case) and the `Job`s will go out of scope without waiting to complete or cleaning up after themselves.
 
 For more info, see 
 
@@ -59,7 +63,5 @@ from condorpool import Job, Pool
 help(Pool)
 help(Job)
 ```
-
-As with `multiprocessing.Pool`, the function to call, its arguments, and its return value must all be [picklable](https://docs.python.org/3/library/pickle.html) in order to send them to and from the batch system.
 
 Tested with python 3.8.10 & `htcondor` 9.0.0, python 2.7.16 & `htcondor` 9.0.0, and Condor 9.0.1.
