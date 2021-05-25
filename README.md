@@ -43,6 +43,14 @@ with Pool() as pool:
     results = mapjob.get()
 ```
 
+When the `Pool` exits from a `with` statement, goes out of scope, or has `close()` called manually, it will wait til all active `Job`s are completed. This ensures that the `Job`s complete successfully (an exception will be raised if not) and they clean up files created in the submission directory (main script, stdout, stderr, log, and return value `.pkl`). If you don't want the `Pool` to wait (and don't care about the return value), you can create a `Pool` with:
+
+``` python
+Pool(jobkwargs = {'cleanup' : False, 'submitdir' : '/tmp'})
+```
+
+This way, the temporary files created by the `Job`s will be written to `/tmp` and the `Job`s will go out of scope without waiting to complete or cleaning up after themselves.
+
 For more info, see 
 
 ``` python

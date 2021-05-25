@@ -48,13 +48,13 @@ class JobFailedError(Exception):
     '''Exception class for failed jobs.'''
     def __init__(self, job):
         msg = '''Job {0} failed!
-stdout:
+*** stdout:
 {1}
 
-stderr:
+*** stderr:
 {2}
 
-log:
+*** Log:
 {3}
 '''.format(job.clusterid, job.stdout(), job.stderr(), job.log())
         super(JobFailedError, self).__init__(msg)
@@ -87,7 +87,7 @@ class Job(object):
     
     def __init__(self, target, args = (), kwargs = {}, submitkwargs = {},
                  submitdir = '.', cleanup = True, cleanupfiles = [],
-                 polltime = 5):
+                 polltime = 5, killstats = ('Held', 'Suspended')):
         '''Makes a condor job. target, args, kwargs and the return value of
         target must all be picklable. By default, the current environment is
         sent with the job (getenv = True) unless 'environment' is given in
@@ -101,6 +101,9 @@ class Job(object):
         - cleanup: delete temporary files created by the job when it's
           deleted. Default to the input script, stdout, stderr and log.
         - cleanupfiles: extra files to delete when the job is deleted.
+        - polltime: default poll interval for wait.
+        - killstats: if the Job status is any of these when it's deleted the
+          job will be killed.
         '''
         self.target = target
         self.submitdir = submitdir
@@ -110,6 +113,7 @@ class Job(object):
         self.cleanup = cleanup
         self.cleanupfiles = list(cleanupfiles)
         self.polltime = polltime
+        self.killstats = killstats
         
         # Take the current environment if not given
         if 'environment' not in submitkwargs:
@@ -153,22 +157,13 @@ class Job(object):
         if not self.submitted():
             return
 
-        # Wait for the job to start
-        self.wait_to_start()
-        
-        # Check if the job has been held or suspended, if so,
-        # print analysis of the job then kill it.
-        if self.status() in ('Held', 'Suspended'):
-            print('WARNING: Job', self.clusterid, 'is', self.status(),
-                  'on delete. Removing it.')
-            print('Analysis:')
-            print(self.analyze())
-            self.remove()
+        # Wait for the job to make sure all output files have been
+        # returned. Kill it if it's Suspended or Held.
+        try:
+            self.wait(killstats = self.killstats)
+        except JobFailedError as ex:            
+            print('JobFailedError:', ex.args[0], file = sys.stderr)
             
-        # Wait to complete to make sure all output files have been
-        # returned by the job.
-        self.wait()
-
         with TmpCd(self.submitdir):
             for fname in self.cleanupfiles:
                 try:
@@ -311,9 +306,14 @@ with open({fout!r}, 'wb') as fout:
                 retval = pickle.load(fout)
         return retval
 
-    def wait(self, timeout = None, polltime = None, timeouterror = False):
+    def wait(self, timeout = None, polltime = None, timeouterror = False,
+             killstats = ()):
         '''Wait til the job is completed. Check every 'polltime'
-        seconds.'''
+        seconds (default given in the constructor). If timeout is
+        given, wait timeout seconds before giving up. If 
+        timeouterror = True, raise a TimeoutError after a timeout.
+        If killstats is given, kill the job if its status is any
+        of those in killstats and raise a JobFailedError.'''
         if not self.submitted():
             raise UnsubmittedError("Can't wait on a job that's not"
                                    " been submitted!")
@@ -331,8 +331,19 @@ with open({fout!r}, 'wb') as fout:
         if polltime is None:
             polltime = self.polltime
         while checktimeout():
-            if self.completed():
+            status = self.status()
+            if status == 'Completed':
                 return
+            elif status in killstats:
+                analysis = self.analyze()
+                self.remove()
+                ex = JobFailedError(self)
+                msg = ex.args[0].splitlines()
+                msg = '\n'.join([msg[0], 'Status ' + repr(status)
+                                 + ' caused it to be killed']
+                                + msg[1:] + ['*** Analysis:', analysis])
+                ex.args = (msg,)
+                raise ex
             sleep(polltime)
 
         if timeouterror:
@@ -385,12 +396,13 @@ with open({fout!r}, 'wb') as fout:
         '''Get the log of the job.'''
         return self.get_text_output('log')
 
-    def get(self, timeout = None, polltime = None):
+    def get(self, timeout = None, polltime = None, killstats = ()):
         '''Get the result of the job. If successful, returns the
         return value of the function, otherwise raises an exception
         and outputs all available info.'''
 
-        self.wait(timeout, polltime, timeouterror = True)
+        self.wait(timeout, polltime, timeouterror = True,
+                  killstats = killstats)
         
         if self.successful():
             return self._return_value()
@@ -424,48 +436,49 @@ class MapResult(object):
         '''Check if all jobs are successful.'''
         return all(j.successful() for j in self.jobs)
 
-    def wait(self, timeout = None, polltime = 5, timeouterror = False):
+    def wait(self, timeout = None, polltime = 5, timeouterror = False,
+             killstats = ()):
         '''Wait for all jobs to finish.'''
         if not all(j.submitted() for j in self.jobs):
-            raise Exception("Can't wait on a job that's not been submitted!")
+            raise UnsubmittedError("Can't wait on a job that's not been"
+                                   "submitted!")
 
-        if timeout:
-            start = datetime.datetime.today()
-
-            def checktimeout():
-                delta = (datetime.datetime.today() - start).total_seconds()
-                return delta < timeout
+        if timeout is not None:
+            for j in self.jobs:
+                start = datetime.datetime.today()
+                j.wait(timeout, polltime, timeouterror, killstats)
+                end = datetime.datetime.today()
+                timeout -= (end - start).total_seconds()
         else:
-            def checktimeout():
-                return True
-            
-        while checktimeout():
-            if all(j.completed() for j in self.jobs):
-                return
-            sleep(polltime)
-
-        if timeouterror:
-            raise TimeoutError(timeout)
+            for j in self.jobs:
+                j.wait()
 
 
 class Pool(object):
     '''Interface to condor that mimics multiprocessing.Pool.'''
 
-    def __init__(self, submitkwargs = {}, jobkwargs = {}):
+    def __init__(self, submitkwargs = {}, jobkwargs = {},
+                 killstats = ('Held', 'Suspended')):
         '''- submitkwargs: a default set of kwargs for htcondor.Submit instances.
           See:
           https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
         - jobkwargs: a default set of kwargs for Job instances (excluding 
-          submitkwargs). See help(Job).'''
+          submitkwargs). See help(Job).
+        - killstats: Jobs with any of these statuses will be killed when the
+          Pool is closed.'''
         self.submitkwargs = dict(submitkwargs)
         self.jobkwargs = dict(jobkwargs)
+        self.killstats = killstats
         self.jobs = []
 
     def __del__(self):
         '''Close the Pool.'''
         # May already be closed if 'with' was used, but in case
         # not, close on delete. There's no harm in closing twice.
-        self.close()
+        try:
+            self.close()
+        except JobFailedError as ex:
+            print('JobFailedError:', ex.args[0], file = sys.stderr)
 
     def __enter__(self):
         return self
@@ -493,9 +506,30 @@ class Pool(object):
         were submitted with cleanup = False) and accept no more jobs. Jobs
         that are currently Held or Suspended will be killed (again, unless
         submitted with cleanup = False).'''
-        self.jobs = []
+        if self.closed():
+            return
         self.apply_async = self._closed_apply_async
+        exceptions = []
+        # Collect the exceptions for all failed jobs
+        while self.jobs:
+            try:
+                j = self.jobs.pop()
+                # Wait for the job to complete. Kill it if it's Suspended or
+                # Held.
+                j.get(killstats = self.killstats)
+            except JobFailedError as ex:
+                exceptions.append(ex)
+        if exceptions:
+            msg = 'Pool.close - failed jobs:\n'
+            for ex in exceptions:
+                msg += '=' * 10 + '\n' + ex.args[0]
+            ex.args = (msg,)
+            raise ex
 
+    def closed(self):
+        '''Check if the Pool is closed.'''
+        return self.apply_async == self._closed_apply_async
+        
     def _closed_apply_async(self, *args, **kwargs):
         '''apply_async redirects to this after the pool is closed.
         It just raises an exception when called.'''
@@ -508,6 +542,9 @@ class Pool(object):
             submitkwargs = self.submitkwargs
         if not jobkwargs:
             jobkwargs = self.jobkwargs
+        jobkwargs = dict(jobkwargs)
+        if 'killstats' not in jobkwargs:
+            jobkwargs['killstats'] = self.killstats
         j = Job(func, args = args, kwargs = kwds,
                 submitkwargs = submitkwargs,
                 **jobkwargs)
