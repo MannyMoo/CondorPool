@@ -53,7 +53,15 @@ If you don't want the `Pool` to wait (and don't care about the return value), yo
 Pool(jobkwargs = {'cleanup' : False, 'submitdir' : '/tmp'})
 ```
 
-This way, the temporary files created by the `Job`s will be written to `/tmp` (which you may want to do in any case) and the `Job`s will go out of scope without waiting to complete or cleaning up after themselves.
+This way, the temporary files created by the `Job`s will be written to `/tmp` (which you may want to do in any case) and the `Job`s will go out of scope without waiting to complete or cleaning up after themselves. `jobkwargs` can also be given per-job by passing it as an argument to any `Pool` function that creates a job (`apply`, `map`, etc).
+
+You can configure the parameters of the job with the `submitkwargs` constructor argument to `Pool` or by passing `submitkwargs` to any `Pool` function that creates a `Job`. Eg, to require a CentOS7 machine, use
+
+``` python
+submitkwargs = {'requirements' : 'OpSysAndVer == "CentOS7"'}
+```
+
+By default, the submission environment is sent with the jobs (`getenv = True`) unless `"environment"` is set in `submitkwargs`. See [here](https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands) for the full list of Condor job parameters.
 
 For more info, see 
 
