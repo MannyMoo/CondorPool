@@ -187,15 +187,30 @@ class Job(object):
             with open(self.fin, 'w') as fin:
                 fin.write('''#!/usr/bin/env python
 from __future__ import print_function
-import pickle
+import pickle, os
+from pprint import pprint
+
+print('Working dir:', os.getcwd())
+print('Working dir contents:')
+pprint(os.listdir('.'))
+print()
 
 # Unpickle the function and its args
 target = pickle.loads({pklargs!r})
 print('Got inputs:')
-print(target)
+pprint(target)
+print()
 
 # Call it.
 retval = target['target'](*target['args'], **target['kwargs'])
+
+print('Got return value:')
+pprint(retval)
+print()
+
+print('Working dir contents:')
+pprint(os.listdir('.'))
+print()
 
 # Pickle the return value first so that the output
 # file isn't created in case of pickling errors.
