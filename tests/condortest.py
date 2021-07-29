@@ -12,7 +12,7 @@ import pickle
 if __name__ == '__main__':
     # Testing code.
     try:
-        with Pool(jobkwargs = {'submitdir' : '/tmp'},
+        with Pool(jobkwargs = {'submitdir' : '/tmp', 'polltime' : 5},
                   submitkwargs = {'requirements' : 'OpSysAndVer == "CentOS7"'}) as pool:
             print('*** Basic test')
             assert test(1, 2, 3) == pool.apply(test, (1,), {'b' : 2, 'c' : 3})
