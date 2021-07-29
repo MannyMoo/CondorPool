@@ -346,7 +346,19 @@ with open({fout!r}, 'wb') as fout:
         if polltime is None:
             polltime = self.polltime
         while checktimeout():
-            status = self.status()
+            nfailed = 0
+            try:
+                status = self.status()
+                nfailed = 0
+            # Catch timeouts of the Condor scheduler query
+            except htcondor.HTCondorIOError as ex:
+                status = ''
+                nfailed += 1
+                if nfailed == 5:
+                    ex.args = (ex.args[0]
+                               + '\ncondorpool.Job.wait: Quit after 5 '
+                               + 'consecutive failed status queries.')
+                    raise ex
             if status == 'Completed':
                 return
             elif status in killstats:
