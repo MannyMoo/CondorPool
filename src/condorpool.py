@@ -87,7 +87,7 @@ class Job(object):
     
     def __init__(self, target, args = (), kwargs = {}, submitkwargs = {},
                  submitdir = '.', cleanup = True, cleanupfiles = [],
-                 polltime = 5, killstats = ('Held', 'Suspended')):
+                 polltime = 60, killstats = ('Held', 'Suspended')):
         '''Makes a condor job. target, args, kwargs and the return value of
         target must all be picklable. By default, the current environment is
         sent with the job (getenv = True) unless 'environment' is given in
