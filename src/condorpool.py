@@ -66,6 +66,15 @@ class PoolClosedError(Exception):
         super(PoolClosedError, self).__init__("Can't submit to a closed Pool!")
 
 
+def add_kerberos_tokens():
+    '''Add kerberos tokens to send with jobs.'''
+    # From https://batchdocs.web.cern.ch/local/pythonapi.html
+    col = htcondor.Collector()
+    credd = htcondor.Credd()
+    credd.add_user_cred(htcondor.CredTypes.Kerberos, None)
+    return col, credd
+
+
 class Job(object):
     '''Submit a job to condor which executes a python function with the 
     given arguments. The interface mimics that of 
@@ -98,6 +107,8 @@ class Job(object):
           output files (stdout, stderr, log, and return value)
         - submitkwargs: the dict to be passed the htcondor.Submit instance, see
         https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
+          If running at CERN, include 'MY.SendCredential' = True in the dict to send kerberos
+          tokens with the job.
         - cleanup: delete temporary files created by the job when it's
           deleted. Default to the input script, stdout, stderr and log.
         - cleanupfiles: extra files to delete when the job is deleted.
@@ -494,6 +505,8 @@ class Pool(object):
         '''- submitkwargs: a default set of kwargs for htcondor.Submit instances.
           See:
           https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
+          If running at CERN, include 'MY.SendCredential' = True in the dict to send kerberos
+          tokens with the job.
         - jobkwargs: a default set of kwargs for Job instances (excluding 
           submitkwargs). See help(Job).
         - killstats: Jobs with any of these statuses will be killed when the
@@ -577,6 +590,10 @@ class Pool(object):
         jobkwargs = dict(jobkwargs)
         if 'killstats' not in jobkwargs:
             jobkwargs['killstats'] = self.killstats
+        # Add kerberos tokens if requested by the MY.SendCredential option
+        if submitkwargs.get('MY.SendCredential', False):
+            # Not sure if we need these to stay in scope during the submission?
+            col, credd = add_kerberos_tokens()
         j = Job(func, args = args, kwargs = kwds,
                 submitkwargs = submitkwargs,
                 **jobkwargs)
