@@ -208,7 +208,7 @@ print('Got return value:')
 pprint(retval)
 print()
 
-print('Working dir contents:')
+print('Working dir contents after exe:')
 pprint(os.listdir('.'))
 print()
 
@@ -224,6 +224,9 @@ except pickle.PicklingError as ex:
 # Write the pickled return value it to the output file.
 with open({fout!r}, 'wb') as fout:
     fout.write(retpkl)
+
+print('Working dir contents after pickle output:')
+pprint(os.listdir('.'))
     '''.format(pklargs = pklargs, fout = self.fout))
             os.chmod(self.fin, 0o700)
 
@@ -322,7 +325,7 @@ with open({fout!r}, 'wb') as fout:
         return retval
 
     def wait(self, timeout = None, polltime = None, timeouterror = False,
-             killstats = ()):
+             killstats = None):
         '''Wait til the job is completed. Check every 'polltime'
         seconds (default given in the constructor). If timeout is
         given, wait timeout seconds before giving up. If 
@@ -345,6 +348,8 @@ with open({fout!r}, 'wb') as fout:
 
         if polltime is None:
             polltime = self.polltime
+        if killstats is None:
+            killstats = self.killstats
         while checktimeout():
             nfailed = 0
             try:
