@@ -505,6 +505,8 @@ class Pool(object):
         '''- submitkwargs: a default set of kwargs for htcondor.Submit instances.
           See:
           https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
+          These can be updated per job using the 'submitkwargs' argument to 
+          apply_async, etc.
           If running at CERN, include 'MY.SendCredential' = True in the dict to send kerberos
           tokens with the job.
         - jobkwargs: a default set of kwargs for Job instances (excluding 
@@ -583,11 +585,12 @@ class Pool(object):
     def apply_async(self, func, args = (), kwds = {},
                     submitkwargs = {}, jobkwargs = {}):
         '''Run a job asynchronously.'''
-        if not submitkwargs:
-            submitkwargs = self.submitkwargs
-        if not jobkwargs:
-            jobkwargs = self.jobkwargs
-        jobkwargs = dict(jobkwargs)
+        _submitkwargs = dict(self.submitkwargs)
+        _submitkwargs.update(submitkwargs)
+        submitkwargs = _submitkwargs
+        _jobkwargs = dict(self.jobkwargs)
+        _jobkwargs.update(jobkwargs)
+        jobkwargs = _jobkwargs
         if 'killstats' not in jobkwargs:
             jobkwargs['killstats'] = self.killstats
         # Add kerberos tokens if requested by the MY.SendCredential option
