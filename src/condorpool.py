@@ -244,8 +244,15 @@ pprint(os.listdir('.'))
             # Add the job to the queue
             schedd = htcondor.Schedd()
             with schedd.transaction() as txn:
-                self.clusterid = self._submit.queue(txn)
-
+                # In case of timeouts, try five times
+                nfail = 0
+                try:
+                    self.clusterid = self._submit.queue(txn)
+                except htcondor.HTCondorIOError as ex:
+                    nfail += 1
+                    if nfail == 5:
+                        ex.args = (ex.args[0] + '\nFailed 5 times.',)
+                    raise ex
         return self.clusterid
 
     def constraint(self):
