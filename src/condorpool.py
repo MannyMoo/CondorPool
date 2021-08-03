@@ -182,8 +182,10 @@ class Job(object):
                 except OSError:
                     pass
         
-    def submit(self):
-        '''Submit the job.'''
+    def submit(self, maxtries = 5, wait = 20):
+        '''Submit the job.
+        - maxtries: number of attemps to submit (in case of timeouts)
+        - wait: wait time between submission attempts'''
         # Create the input file
         targetargs = {'target' : self.target, 'args' : self.args,
                       'kwargs' : self.kwargs}
@@ -250,9 +252,10 @@ pprint(os.listdir('.'))
                     self.clusterid = self._submit.queue(txn)
                 except htcondor.HTCondorIOError as ex:
                     nfail += 1
-                    if nfail == 5:
-                        ex.args = (ex.args[0] + '\nFailed 5 times.',)
-                    raise ex
+                    if nfail == maxtries:
+                        ex.args = (ex.args[0] + '\nFailed {0} times.'.format(maxtries),)
+                        raise ex
+                    sleep(wait)
         return self.clusterid
 
     def constraint(self):
