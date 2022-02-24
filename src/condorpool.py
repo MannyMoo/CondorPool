@@ -192,13 +192,14 @@ class Job(object):
         try:
             pklargs = pickle.dumps(targetargs)
         except pickle.PicklingError as ex:
-            ex.args = ('Failed to pickle target function or arguments!\n'
-                       'Got: {0!r}\n'.format(targetargs) + ex.args[0],)
-            raise ex
+            raise pickle.PicklingError(
+                'Failed to pickle target function or arguments!\n'
+                'Got: {0!r}\n'.format(targetargs) + ex.args[0]
+            )
         
         with TmpCd(self.submitdir):
             with open(self.fin, 'w') as fin:
-                fin.write('''#!/usr/bin/env python
+                fin.write('''#!/usr/bin/env python{pyver}
 from __future__ import print_function
 import pickle, os
 from pprint import pprint
@@ -230,9 +231,10 @@ print()
 try:
     retpkl = pickle.dumps(retval)
 except pickle.PicklingError as ex:
-    ex.args = ('Failed to pickle return value: ' + repr(retval)
-               + '\\n' + ex.args[0],)
-    raise ex
+    raise pickle.PicklingError(
+        'Failed to pickle return value: ' + repr(retval)
+        + '\\n' + ex.args[0]
+    )
 
 # Write the pickled return value it to the output file.
 with open({fout!r}, 'wb') as fout:
@@ -240,7 +242,8 @@ with open({fout!r}, 'wb') as fout:
 
 print('Working dir contents after pickle output:')
 pprint(os.listdir('.'))
-    '''.format(pklargs = pklargs, fout = self.fout))
+    '''.format(pklargs = pklargs, fout = self.fout,
+               pyver=sys.version_info.major))
             os.chmod(self.fin, 0o700)
 
             # Add the job to the queue
@@ -253,8 +256,9 @@ pprint(os.listdir('.'))
                 except htcondor.HTCondorIOError as ex:
                     nfail += 1
                     if nfail == maxtries:
-                        ex.args = (ex.args[0] + '\nFailed {0} times.'.format(maxtries),)
-                        raise ex
+                        raise htcondor.HTCondorIOError(
+                            ex.args[0] + '\nFailed {0} times.'.format(maxtries)
+                        )
                     sleep(wait)
         return self.clusterid
 
@@ -381,10 +385,11 @@ pprint(os.listdir('.'))
                 status = ''
                 nfailed += 1
                 if nfailed == 5:
-                    ex.args = (ex.args[0]
-                               + '\ncondorpool.Job.wait: Quit after 5 '
-                               + 'consecutive failed status queries.')
-                    raise ex
+                    htcondor.HTCondorIOError(
+                        ex.args[0]
+                        + '\ncondorpool.Job.wait: Quit after 5 '
+                        + 'consecutive failed status queries.'
+                    )
             if status == 'Completed':
                 return
             elif status in killstats:
@@ -593,7 +598,8 @@ class Pool(object):
         raise PoolClosedError()
         
     def apply_async(self, func, args = (), kwds = {},
-                    submitkwargs = {}, jobkwargs = {}):
+                    submitkwargs = {}, jobkwargs = {},
+                    maxtries=5):
         '''Run a job asynchronously.'''
         _submitkwargs = dict(self.submitkwargs)
         _submitkwargs.update(submitkwargs)
@@ -610,7 +616,7 @@ class Pool(object):
         j = Job(func, args = args, kwargs = kwds,
                 submitkwargs = submitkwargs,
                 **jobkwargs)
-        j.submit()
+        j.submit(maxtries=maxtries)
         self.jobs.append(j)
         return j
 
