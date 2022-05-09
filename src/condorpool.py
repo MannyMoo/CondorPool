@@ -48,6 +48,9 @@ class JobFailedError(Exception):
     '''Exception class for failed jobs.'''
     def __init__(self, job):
         msg = '''Job {0} failed!
+Submitted: {4}
+Completed: {5}
+Output exists: {6}
 *** stdout:
 {1}
 
@@ -56,7 +59,8 @@ class JobFailedError(Exception):
 
 *** Log:
 {3}
-'''.format(job.clusterid, job.stdout(), job.stderr(), job.log())
+'''.format(job.clusterid, job.stdout(), job.stderr(), job.log(),
+           job.submitted(), job.completed(), job.output_exists())
         super(JobFailedError, self).__init__(msg)
 
 
@@ -216,7 +220,9 @@ pprint(target)
 print()
 
 # Call it.
+pwd = os.getcwd()
 retval = target['target'](*target['args'], **target['kwargs'])
+os.chdir(pwd)
 
 print('Got return value:')
 pprint(retval)
@@ -339,9 +345,13 @@ pprint(os.listdir('.'))
             return
         # The output file will only exist if the job completed
         # successfully.
+        return self.output_exists()
+    
+    def output_exists(self):
+        '''Check if the outputfile exists.'''
         with TmpCd(self.submitdir):
             return os.path.exists(self.fout)
-    
+        
     def _return_value(self):
         '''Get the return value of the job.'''
         with TmpCd(self.submitdir):
