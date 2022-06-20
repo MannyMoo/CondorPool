@@ -100,7 +100,8 @@ class Job(object):
     
     def __init__(self, target, args = (), kwargs = {}, submitkwargs = {},
                  submitdir = '.', cleanup = True, cleanupfiles = [],
-                 polltime = 60, killstats = ('Held', 'Suspended')):
+                 polltime = 60, killstats = ('Held', 'Suspended'),
+                 cleanfailed=False):
         '''Makes a condor job. target, args, kwargs and the return value of
         target must all be picklable. By default, the current environment is
         sent with the job (getenv = True) unless 'environment' is given in
@@ -119,6 +120,7 @@ class Job(object):
         - polltime: default poll interval for wait.
         - killstats: if the Job status is any of these when it's deleted the
           job will be killed.
+        - cleanfailed: whether to clean up job files for failed jobs
         '''
         self.target = target
         self.submitdir = submitdir
@@ -129,13 +131,14 @@ class Job(object):
         self.cleanupfiles = list(cleanupfiles)
         self.polltime = polltime
         self.killstats = killstats
+        self.cleanfailed = cleanfailed
         
         # Take the current environment if not given
         if 'environment' not in submitkwargs:
             self.submitkwargs['getenv'] = 'True'
 
         # Get the input and output file names
-        fname = str(uuid.uuid4().hex)
+        fname = 'condorpool_' + str(uuid.uuid4().hex)
         self.fin = fname + '.fin.py'
         self.fout = fname + '.fout.pkl'
         self.cleanupfiles += [self.fin, self.fout]
@@ -178,6 +181,8 @@ class Job(object):
             self.wait(killstats = self.killstats)
         except JobFailedError as ex:            
             print('JobFailedError:', ex.args[0], file = sys.stderr)
+            if not self.cleanfailed:
+                return
             
         with TmpCd(self.submitdir):
             for fname in self.cleanupfiles:
