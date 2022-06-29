@@ -9,6 +9,7 @@ from time import sleep
 import datetime
 import subprocess
 import sys
+from socket import gethostname
 
 
 class TmpCd(object):
@@ -79,7 +80,236 @@ def add_kerberos_tokens():
     return col, credd
 
 
-class Job(object):
+class RemoteTaskBase(object):
+    '''Base class for remote tasks. Creates the job files, retrieves
+    the return value, and cleans up, but doesn't implement any 
+    mechanisms for submitting/running.'''
+    def __init__(self, target, args=(), kwargs={},
+                 submitdir='.', cleanup=True, cleanupfiles=[],
+                 cleanfailed=False, sendenv=True, cd=False,
+                 prefix='remotetask'):
+        self.target = target
+        self.submitdir = submitdir
+        self.args = tuple(args)
+        self.kwargs = dict(kwargs)
+        self.sendenv = sendenv
+        self.cleanup = cleanup
+        self.cleanupfiles = list(cleanupfiles)
+        self.cleanfailed = cleanfailed
+        self.cd = cd
+        
+        # Get the input and output file names
+        self.fname = prefix + '_' + str(uuid.uuid4().hex)
+        self.fin = self.fname + '.fin.py'
+        self.fout = self.fname + '.fout.pkl'
+        self.cleanupfiles += [self.fin, self.fout]
+
+    def __del__(self):
+        '''Clean up files.'''
+        if not self.cleanup or (not self.cleanfailed
+                                and not self.successful()):
+            return
+        
+        with TmpCd(self.submitdir):
+            for fname in self.cleanupfiles:
+                try:
+                    os.remove(fname)
+                except OSError:
+                    pass
+        
+    def create_job_file(self):
+        '''Create the job file.'''
+        # Create the input file
+        targetargs = {'target' : self.target, 'args' : self.args,
+                      'kwargs' : self.kwargs}
+        try:
+            pklargs = pickle.dumps(targetargs)
+        except pickle.PicklingError as ex:
+            raise pickle.PicklingError(
+                'Failed to pickle target function or arguments!\n'
+                'Got: {0!r}\n'.format(targetargs) + ex.args[0]
+            )
+        
+        with TmpCd(self.submitdir):
+            with open(self.fin, 'w') as fin:
+                fin.write('''#!/usr/bin/env python{pyver}
+from __future__ import print_function
+import pickle, os
+from pprint import pprint
+
+{cd}
+
+print('Working dir:', os.getcwd())
+print('Working dir contents:')
+pprint(os.listdir('.'))
+print()
+
+{env}
+print('Environment:')
+pprint(os.environ)
+
+# Unpickle the function and its args
+target = pickle.loads({pklargs!r})
+print('Got inputs:')
+pprint(target)
+print()
+
+# Call it.
+pwd = os.getcwd()
+retval = target['target'](*target['args'], **target['kwargs'])
+os.chdir(pwd)
+
+print('Got return value:')
+pprint(retval)
+print()
+
+print('Working dir contents after exe:')
+pprint(os.listdir('.'))
+print()
+
+# Pickle the return value first so that the output
+# file isn't created in case of pickling errors.
+try:
+    retpkl = pickle.dumps(retval)
+except pickle.PicklingError as ex:
+    raise pickle.PicklingError(
+        'Failed to pickle return value: ' + repr(retval)
+        + '\\n' + ex.args[0]
+    )
+
+# Write the pickled return value it to the output file.
+with open({fout!r}, 'wb') as fout:
+    fout.write(retpkl)
+
+print('Working dir contents after pickle output:')
+pprint(os.listdir('.'))
+    '''.format(pklargs = pklargs, fout = self.fout,
+               pyver=sys.version_info.major,
+               cd=('' if not self.cd else
+                   'os.chdir({!r})'.format(self.submitdir)),
+               env=('' if not self.sendenv else
+                    'os.environ.update({!r})'.format(os.environ))))
+            os.chmod(self.fin, 0o700)
+        return os.path.join(self.submitdir, self.fin)
+    
+    def output_exists(self):
+        '''Check if the outputfile exists.'''
+        with TmpCd(self.submitdir):
+            return os.path.exists(self.fout)
+
+    def successful(self):
+        '''Check if the job was successful.'''
+        return self.output_exists()
+        
+    def _return_value(self):
+        '''Get the return value of the job.'''
+        with TmpCd(self.submitdir):
+            with open(self.fout, 'rb') as fout:
+                retval = pickle.load(fout)
+        return retval
+
+    def _failed(self):
+        '''Called when the job fails.'''
+        raise Exception('Task failed!')        
+    
+    def get(self):
+        '''Get the return value of the job.'''
+        if self.successful():
+            return self._return_value()
+        self._failed()
+        
+
+class SshTask(RemoteTaskBase):
+    '''Run a job over ssh.'''
+    def __init__(self, remote, *args, **kwargs):
+        '''remote: address of the server on which to execute
+        Other args are the same as RemoteTaskBase. Assumes
+        the job is run from a shared directory accessible to
+        the remote server.'''
+        # Protect against recursive sshing
+        if gethostname().startswith(remote):
+            raise Exception('Attempt to ssh to host!')
+        self.remote = remote
+        kwargs['cd'] = True
+        kwargs['submitdir'] = os.path.abspath(kwargs.get('submitdir', '.'))
+        super(SshTask, self).__init__(*args, **kwargs)
+        self._stdout = self.fname + '.stdout'
+        self._stderr = self.fname + '.stderr'
+        self.cleanupfiles += [self._stdout, self._stderr]
+        self.proc = None
+        
+    def submit(self):
+        '''Submit the job.'''
+        jobfile = self.create_job_file()
+
+        args = ['ssh', self.remote]
+        if not self.sendenv:
+            args += ['python', jobfile]
+        else:
+            env = '\n'.join(['export {0}={1!r}'.format(var, val)
+                             for var, val in os.environ.items()
+                             if var != '_'])
+            args += ['bash', '-c', '''
+{env}
+python {fin}
+'''.format(env=env, fin=os.path.join(self.submitdir, self.fin))]
+        with TmpCd(self.submitdir):
+            stdout = open(self._stdout, 'w')
+            stderr = open(self._stderr, 'w')
+            self.proc = subprocess.Popen(
+                args, stdout=stdout, stderr=stderr
+            )
+        return self.proc.pid
+
+    def wait(self):
+        '''Wait for the job to complete.'''
+        if not self.proc:
+            return
+        return self.proc.wait()
+
+    def get(self):
+        '''Get the return value.'''
+        self.wait()
+        return super(SshTask, self).get()
+    
+    def stdout(self):
+        '''Get the stdout.'''
+        stdout = os.path.join(self.submitdir,
+                              self._stdout)
+        if not os.path.exists(stdout):
+            return ''
+        with open(stdout) as f:
+            return f.read()
+
+    def stderr(self):
+        '''Get the stderr.'''
+        stderr = os.path.join(self.submitdir,
+                              self._stderr)
+        if not os.path.exists(stderr):
+            return ''
+        with open(stderr) as f:
+            return f.read()
+
+    def successful(self):
+        '''Check if the job was successful.'''
+        return (super(SshTask, self).successful()
+                and self.proc.poll() == 0)
+    
+    def _failed(self):
+        '''Called when the job fails.'''
+        raise Exception(
+            '''Task failed!
+exit code: {2}
+stdout:
+{0}
+
+stderr:
+{1}
+'''.format(self.stdout(), self.stderr(), self.proc.poll() if self.proc else None)
+        )
+    
+        
+class Job(RemoteTaskBase):
     '''Submit a job to condor which executes a python function with the 
     given arguments. The interface mimics that of 
     multiprocessing.pool.ApplyResult in that it has get, ready, successful,
@@ -122,26 +352,20 @@ class Job(object):
           job will be killed.
         - cleanfailed: whether to clean up job files for failed jobs
         '''
-        self.target = target
-        self.submitdir = submitdir
-        self.args = tuple(args)
-        self.kwargs = dict(kwargs)
+        super(Job, self).__init__(
+            prefix='condorpool', target=target, args=args,
+            kwargs=kwargs, submitdir=submitdir, cleanup=cleanup,
+            cleanupfiles=cleanupfiles, cleanfailed=cleanfailed,
+            sendenv=True)
+                                  
         self.submitkwargs = dict(submitkwargs)
-        self.cleanup = cleanup
-        self.cleanupfiles = list(cleanupfiles)
         self.polltime = polltime
         self.killstats = killstats
-        self.cleanfailed = cleanfailed
         
         # Take the current environment if not given
         if 'environment' not in submitkwargs:
             self.submitkwargs['getenv'] = 'True'
 
-        # Get the input and output file names
-        fname = 'condorpool_' + str(uuid.uuid4().hex)
-        self.fin = fname + '.fin.py'
-        self.fout = fname + '.fout.pkl'
-        self.cleanupfiles += [self.fin, self.fout]
         # Set them as the arguments to the main function.
         self.submitkwargs['executable'] = self.fin
         
@@ -155,15 +379,11 @@ class Job(object):
         # transfered back.
         if 'transfer_output_files' in self.submitkwargs:
             self.submitkwargs['transfer_output_files'] += ',' + self.fout
-            
+
         for name in 'output', 'error', 'log':
-            self.submitkwargs[name] = fname + '.' + name[:3]
+            self.submitkwargs[name] = self.fname + '.' + name[:3]
             self.cleanupfiles.append(self.submitkwargs[name])
 
-        # Weirdly, inheriting from htcondir.Submit doesn't work as
-        # super(Job, self).__init__ returns Job.__init__, causing
-        # an infinite recursion. So just contain a Submit instance.
-        self._submit = htcondor.Submit(**self.submitkwargs)
         self.clusterid = None
         
     def __del__(self):
@@ -184,86 +404,28 @@ class Job(object):
             if not self.cleanfailed:
                 return
             
-        with TmpCd(self.submitdir):
-            for fname in self.cleanupfiles:
-                try:
-                    os.remove(fname)
-                except OSError:
-                    pass
+        super(Job, self).__del__()
         
     def submit(self, maxtries = 5, wait = 20):
         '''Submit the job.
         - maxtries: number of attemps to submit (in case of timeouts)
         - wait: wait time between submission attempts'''
         # Create the input file
-        targetargs = {'target' : self.target, 'args' : self.args,
-                      'kwargs' : self.kwargs}
-        try:
-            pklargs = pickle.dumps(targetargs)
-        except pickle.PicklingError as ex:
-            raise pickle.PicklingError(
-                'Failed to pickle target function or arguments!\n'
-                'Got: {0!r}\n'.format(targetargs) + ex.args[0]
-            )
-        
+        self.create_job_file()
+
+        # Weirdly, inheriting from htcondir.Submit doesn't work as
+        # super(Job, self).__init__ returns Job.__init__, causing
+        # an infinite recursion. So just make a Submit instance here.
+        _submit = htcondor.Submit(**self.submitkwargs)
+
         with TmpCd(self.submitdir):
-            with open(self.fin, 'w') as fin:
-                fin.write('''#!/usr/bin/env python{pyver}
-from __future__ import print_function
-import pickle, os
-from pprint import pprint
-
-print('Working dir:', os.getcwd())
-print('Working dir contents:')
-pprint(os.listdir('.'))
-print()
-
-# Unpickle the function and its args
-target = pickle.loads({pklargs!r})
-print('Got inputs:')
-pprint(target)
-print()
-
-# Call it.
-pwd = os.getcwd()
-retval = target['target'](*target['args'], **target['kwargs'])
-os.chdir(pwd)
-
-print('Got return value:')
-pprint(retval)
-print()
-
-print('Working dir contents after exe:')
-pprint(os.listdir('.'))
-print()
-
-# Pickle the return value first so that the output
-# file isn't created in case of pickling errors.
-try:
-    retpkl = pickle.dumps(retval)
-except pickle.PicklingError as ex:
-    raise pickle.PicklingError(
-        'Failed to pickle return value: ' + repr(retval)
-        + '\\n' + ex.args[0]
-    )
-
-# Write the pickled return value it to the output file.
-with open({fout!r}, 'wb') as fout:
-    fout.write(retpkl)
-
-print('Working dir contents after pickle output:')
-pprint(os.listdir('.'))
-    '''.format(pklargs = pklargs, fout = self.fout,
-               pyver=sys.version_info.major))
-            os.chmod(self.fin, 0o700)
-
             # Add the job to the queue
             schedd = htcondor.Schedd()
             with schedd.transaction() as txn:
                 # In case of timeouts, try five times
                 nfail = 0
                 try:
-                    self.clusterid = self._submit.queue(txn)
+                    self.clusterid = _submit.queue(txn)
                 except htcondor.HTCondorIOError as ex:
                     nfail += 1
                     if nfail == maxtries:
@@ -303,6 +465,8 @@ pprint(os.listdir('.'))
     def act(self, action):
         '''Perform a scheduling action on this job.'''
         schedd = htcondor.Schedd()
+        if isinstance(action, int):
+            action = Job.actions[action]
         schedd.act(action, self.constraint())        
     
     def analyze(self):
@@ -342,28 +506,19 @@ pprint(os.listdir('.'))
     def successful(self):
         '''Check if the job completed successfully. Returns None if the job
         isn't completed.'''
+        # The output file will only exist if the job completed
+        # successfully.
+        if self.output_exists():
+            return True
         # Not submitted
         if not self.submitted():
             return
         # Not completed
         if not self.completed():
             return
-        # The output file will only exist if the job completed
-        # successfully.
-        return self.output_exists()
+        # Failed
+        return False
     
-    def output_exists(self):
-        '''Check if the outputfile exists.'''
-        with TmpCd(self.submitdir):
-            return os.path.exists(self.fout)
-        
-    def _return_value(self):
-        '''Get the return value of the job.'''
-        with TmpCd(self.submitdir):
-            with open(self.fout, 'rb') as fout:
-                retval = pickle.load(fout)
-        return retval
-
     def wait(self, timeout = None, polltime = None, timeouterror = False,
              killstats = None):
         '''Wait til the job is completed. Check every 'polltime'
@@ -375,6 +530,9 @@ pprint(os.listdir('.'))
         if not self.submitted():
             raise UnsubmittedError("Can't wait on a job that's not"
                                    " been submitted!")
+        # Already done
+        if self.successful():
+            return
         
         if timeout:
             start = datetime.datetime.today()
@@ -476,19 +634,96 @@ pprint(os.listdir('.'))
 
         self.wait(timeout, polltime, timeouterror = True,
                   killstats = killstats)
-        
-        if self.successful():
-            return self._return_value()
-        
+        return super(Job, self).get()
+
+    def _failed(self):
+        '''Called when the job fails.'''
         raise JobFailedError(self)
 
 
+Job.actions = {}
 for action in ('Continue', 'Hold', 'Release', 'Remove',
                'RemoveX', 'Suspend', 'Vacate', 'VacateFast'):
     setattr(Job, (action.lower() if action != 'Continue' else action),
             eval('lambda self : self.act(htcondor.JobAction.{0})'
                  .format(action)))
+    action = getattr(htcondor.JobAction, action)
+    Job.actions[action.real] = action
+
+
+def _remote_run(self, target, *args, **kwargs):
+    '''Pickle-able function to call a member method.'''
+    return getattr(self, target)(*args, **kwargs)
     
+    
+class RemoteJob(Job):
+    '''Submit a job over ssh.'''
+    def __init__(self, remote, *args, **kwargs):
+        '''remote: the ssh server to submit from.
+        The other args are passed to Job.'''
+        self.remote = remote
+        super(RemoteJob, self).__init__(*args, **kwargs)
+
+    def _remote_run(self, target, *args, **kwargs):
+        '''Run on the remote server.'''
+        task = SshTask(self.remote, _remote_run,
+                       # Make the Job instance from the RemoteJob
+                       args=(self.local_job(), target) + args,
+                       kwargs=kwargs,
+                       submitdir=self.submitdir)
+        task.submit()
+        return task.get()
+        
+    def submit(self, maxtries=5, wait=20):
+        '''Submit the job.
+        - maxtries: number of attemps to submit (in case of timeouts)
+        - wait: wait time between submission attempts'''
+        self.clusterid = self._remote_run('submit', maxtries=maxtries,
+                                          wait=wait)
+
+    def query(self, *projection, **kwargs):
+        '''Query the scheduler about this job. Default the job status. 
+        See
+        https://htcondor.readthedocs.io/en/latest/classad-attributes/job-classad-attributes.html
+        for the list of attributes that can be given in 'projection'.
+        If the job is completed, this checks the history unless 
+        checkhistory = False is given. Checking the history can
+        be slow.'''
+        return self._remote_run('query', *projection, **kwargs)
+
+    def act(self, action):
+        '''Perform a scheduling action on this job.'''
+        # Convert to int with action.real as htcondor.JobAction
+        # instances can't be pickled
+        return self._remote_run('act', action.real)
+
+    def analyze(self):
+        '''Perform a scheduling action on this job.'''
+        return self._remote_run('analyze')
+
+    def wait(self, *args, **kwargs):
+        '''Wait til the job is completed. Check every 'polltime'
+        seconds (default given in the constructor). If timeout is
+        given, wait timeout seconds before giving up. If 
+        timeouterror = True, raise a TimeoutError after a timeout.
+        If killstats is given, kill the job if its status is any
+        of those in killstats and raise a JobFailedError.'''
+        # Already completed
+        if self.successful():
+            return
+        return self._remote_run('wait', *args, **kwargs)
+
+    def local_job(self):
+        '''Make a (local) Job instance from this RemoteJob and
+        set cleanup=False so it doesn't wait or delete files when
+        deleted.'''
+        j = Job(self.target)
+        # Copy attributes
+        for k, v in self.__dict__.items():
+            setattr(j, k, v)
+        j.cleanup = False
+        return j
+
 
 class MapResult(object):
     '''Results of a mapping of a sequence onto a set of jobs.'''
@@ -531,7 +766,7 @@ class Pool(object):
     '''Interface to condor that mimics multiprocessing.Pool.'''
 
     def __init__(self, submitkwargs = {}, jobkwargs = {},
-                 killstats = ('Held', 'Suspended')):
+                 killstats = ('Held', 'Suspended'), remote=None):
         '''- submitkwargs: a default set of kwargs for htcondor.Submit instances.
           See:
           https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html#submit-description-file-commands
@@ -547,7 +782,15 @@ class Pool(object):
         self.jobkwargs = dict(jobkwargs)
         self.killstats = killstats
         self.jobs = []
+        self.make_job = Job
+        self.remote = remote
+        if self.remote:
 
+            def make_job(*args, **kwargs):
+                return RemoteJob(self.remote, *args, **kwargs)
+
+            self.make_job = make_job
+        
     def __del__(self):
         '''Close the Pool.'''
         # May already be closed if 'with' was used, but in case
@@ -628,9 +871,9 @@ class Pool(object):
         if submitkwargs.get('MY.SendCredential', False):
             # Not sure if we need these to stay in scope during the submission?
             col, credd = add_kerberos_tokens()
-        j = Job(func, args = args, kwargs = kwds,
-                submitkwargs = submitkwargs,
-                **jobkwargs)
+        j = self.make_job(func, args = args, kwargs = kwds,
+                          submitkwargs = submitkwargs,
+                          **jobkwargs)
         j.submit(maxtries=maxtries)
         self.jobs.append(j)
         return j
